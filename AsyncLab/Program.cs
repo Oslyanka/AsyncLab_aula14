@@ -1,8 +1,13 @@
-﻿using System.Diagnostics;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 // =================== Configuração ===================
 // Iterações elevadas deixam o trabalho realmente pesado (CPU-bound).
@@ -67,7 +72,7 @@ for (int i = startIndex; i < linhas.Length; i++)
 
 Console.WriteLine($"Registros lidos: {municipios.Count}");
 
-// Grupo por UF
+// Grupo por UF 
 var porUf = new Dictionary<string, List<Municipio>>(StringComparer.OrdinalIgnoreCase);
 foreach (var m in municipios)
 {
@@ -103,18 +108,20 @@ foreach (var uf in ufsOrdenadas)
 
         var listaJson = new List<object>();
         int count = 0;
-        foreach (var m in listaUf)
+
+        var tasks = listaUf.Select(async m =>
         {
             // Password: todos os campos concatenados; Salt: IBGE + “pepper” fixo (opcional)
             string password = m.ToConcatenatedString();
             byte[] salt = Util.BuildSalt(m.Ibge);
 
             // Trabalho pesado real (PBKDF2/SHA-256)
-            string hashHex = Util.DeriveHashHex(password, salt, PBKDF2_ITERATIONS, HASH_BYTES);
+            string hashHex = await Task.Run(() => Util.DeriveHashHex(password, salt, PBKDF2_ITERATIONS, HASH_BYTES));
 
             swOut.WriteLine($"{m.Tom};{m.Ibge};{m.NomeTom};{m.NomeIbge};{m.Uf};{hashHex}");
 
-            listaJson.Add(new {
+            listaJson.Add(new
+            {
                 m.Tom,
                 m.Ibge,
                 m.NomeTom,
@@ -123,12 +130,15 @@ foreach (var uf in ufsOrdenadas)
                 Hash = hashHex
             });
 
-            count++;
+            Interlocked.Increment(ref count);
             if (count % 50 == 0 || count == listaUf.Count)
             {
                 Console.WriteLine($"  Parcial: {count}/{listaUf.Count} municípios processados para UF {uf} | Tempo parcial: {FormatTempo(swUf.ElapsedMilliseconds)}");
             }
-        }
+        });
+
+        await Task.WhenAll(tasks);
+
         // Salva JSON
         string jsonPath = Path.Combine(outRoot, $"municipios_hash_{uf}.json");
         var json = JsonSerializer.Serialize(listaJson, new JsonSerializerOptions { WriteIndented = true });
